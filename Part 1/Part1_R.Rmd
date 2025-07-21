@@ -1,8 +1,6 @@
 ---
 title: "Part 1"
-output:
-  pdf_document:
-    latex_engine: xelatex
+output: html_document
 editor_options: 
   chunk_output_type: console
 ---
@@ -15,15 +13,18 @@ knitr::opts_chunk$set(echo = TRUE,message = FALSE, warning = FALSE,fig.width = 1
 library(ggplot2)
 library(rmarkdown)
 library(tinytex)
+library(patchwork)
 ```
 
 ## Exercise A
 ```{r exercise A}
 
-#parameters
-x0 <- 0
+#initial parameters
+x0 <- 0 #initial value of x
 N <- 10000
 s <- 1
+
+set.seed(123) #lock the random generation - replicable just like the report
 
 #pdf given
 pdf <- function(x) {
@@ -32,17 +33,17 @@ pdf <- function(x) {
 
 #random walk metropolis given
 metropolis <- function(x0, N, s) {
-  x <- numeric(N)
-  x[1] <- x0
+  x <- numeric(N) #create vector x to store the chain
+  x[1] <- x0 #first value is x0
   
   for (i in 2:N) {
-    random_number <- rnorm(1, mean = x[i-1], sd = s)
-    r <- pdf(random_number) / pdf(x[i-1])
+    random_number <- rnorm(1, mean = x[i-1], sd = s) #new number is selected from ND centered at the previous x value
+    r <- pdf(random_number) / pdf(x[i-1]) #calculate r
     
-    if (log(runif(1)) < log(r)) {
-      x[i] <- random_number
+    if (log(runif(1)) < log(r)) {  #generate random u from UD, if logu < log r
+      x[i] <- random_number #new xi is the random number
     } else {
-      x[i] <- x[i-1]
+      x[i] <- x[i-1] #else same as last
     }
   }
   
@@ -68,7 +69,7 @@ axis(1, at = seq(-5, 5, by = 1))
 lines(kernel_density, col = "#6d2e46", lwd = 2)
 curve(pdf(x), col = "#6adc8e", lwd = 2, add = TRUE)
 legend(x="topright", 
-       c("Samples Density Distribution", "Kernel Density Line", "Probability Density Function"),
+       c("Samples Density Distribution", "Kernel Density Plot", "f(x)"),
        col=c("#818aa3","#6d2e46", "#6adc8e"), 
        lty=c(NA,1,1), lwd = c(NA, 2, 2),
        pch = c(15,NA,NA), pt.cex = 2)
@@ -89,11 +90,11 @@ cat("Monte Carlo Standard Deviation Estimate:", sd_estimate)
 ```{r exercise b}
 #function to calculate Rhat
 calculate_R_hat <- function(chains) {
-  J <- length(chains)
-  N <- length(chains[[1]])
+  J <- length(chains) #number of chains
+  N <- length(chains[[1]]) #number of iterations
   
-  means <- sapply(chains, mean)
-  variances <- sapply(chains, var)
+  means <- sapply(chains, mean) #mean of each vector
+  variances <- sapply(chains, var) #var of each vector
   
   W <- mean(variances)
   M <- mean(means)
@@ -108,27 +109,29 @@ N <- 2000
 s <- 0.001
 x0_initial_values <- c(0, 1, 2, 3) #considered 4 chains with different x0 initial values
 
-chains <- lapply(x0_initial_values, function(x0) metropolis(x0, N, s))
+chains <- lapply(x0_initial_values, function(x0) metropolis(x0, N, s)) #run metropolis 4 times
 R_hat <- calculate_R_hat(chains)
 cat("R-hat for s = 0.001:", R_hat)
 
 #create plot for values of Rhat over grid of s values
-s_values <- seq(0.001, 1, by = 0.001)
+s_values <- seq(0.001, 1, by = 0.001) #create values from 0.001 to 1.000, increasing by 0.001
 R_hats <- numeric(length(s_values))
 
-for (i in seq_along(s_values)) {
+for (i in seq_along(s_values)) { #repeat the exercise for each value of s, and add it to r_hats
   s <- s_values[i]
   chains <- lapply(x0_initial_values, function(x0) metropolis(x0, N, s))
   R_hats[i] <- calculate_R_hat(chains)
 }
 
+#turn into df
 r_hat_df <- data.frame(
   s = s_values,
   R_hat = R_hats
 )
-r_hat_df$threshold_group <- ifelse(r_hat_df$R_hat > 1.05, "Above 1.05", "Below or 1.05")
+r_hat_df$threshold_group <- ifelse(r_hat_df$R_hat > 1.05, "Above 1.05", "Below or 1.05") #get new column
 
-ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
+#scatterplot 
+p1 <- ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
   geom_point(size = 1) +
   labs(
     title = expression(paste("Values of ", hat(R), " over s values")),
@@ -147,7 +150,7 @@ ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
     )
 
 #Plot: zoomed ylim(0,2)
-ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
+p2 <- ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
   geom_point(size = 1) +
   labs(
     title = expression(paste("Values of ", hat(R), " over s values (zoomed in)")),
@@ -165,5 +168,12 @@ ggplot(r_hat_df, aes(x = s, y = R_hat, color = threshold_group)) +
       panel.background = element_rect(fill = "white"),
       axis.line = element_line(color = "black")
     )
+
+
+(p1 + p2) + plot_layout(guides = "collect") & theme(legend.position = "bottom")
 ```
+
+
+
+
 
