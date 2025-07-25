@@ -1,0 +1,435 @@
+---
+title: "Part 2"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE, warning = FALSE,fig.width = 10,fig.height = 6)
+```
+
+```{r libraries}
+library(ggplot2)
+library(dplyr)
+library(DBI)
+library(lubridate) #better for handling time and changing the format
+library(knitr) #create the tables
+library(kableExtra)
+library(patchwork)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #ensures im on the right directory
+```
+
+##Create DB 
+```{r}
+# Connect to database (create if doesn't exist)
+conn <- dbConnect(RSQLite::SQLite(), "airlines.db")
+
+# If database is empty (e.g., no tables), populate it
+if (length(dbListTables(conn)) == 0) {
+  
+  # Reading CSVs
+  ontime_2004 <- read.csv("2004.csv", header = TRUE)
+  ontime_2005 <- read.csv("2005.csv", header = TRUE)
+  ontime_2006 <- read.csv("2006.csv", header = TRUE)
+  ontime_2007 <- read.csv("2007.csv", header = TRUE)
+  ontime_2008 <- read.csv("2008.csv", header = TRUE)
+  airports    <- read.csv("airports.csv", header = TRUE)
+  carriers    <- read.csv("carriers.csv", header = TRUE)
+  planes      <- read.csv("plane-data.csv", header = TRUE)
+
+  # function to make columns lowercase
+  to_lowercase_names <- function(df) {
+    names(df) <- tolower(names(df))
+    return(df)
+  }
+
+  ontime_2004 <- tolower(ontime_2004)
+  ontime_2005 <- to_lowercase_names(ontime_2005)
+  ontime_2006 <- to_lowercase_names(ontime_2006)
+  ontime_2007 <- to_lowercase_names(ontime_2007)
+  ontime_2008 <- to_lowercase_names(ontime_2008)
+  airports    <- to_lowercase_names(airports)
+  carriers    <- to_lowercase_names(carriers)
+  planes      <- to_lowercase_names(planes)
+
+  # Combine years into one big dataframe to then write onto database
+  combine_ontimes <- bind_rows(ontime_2004, ontime_2005, ontime_2006, ontime_2007, ontime_2008)
+
+  # Write tables to the database
+  dbWriteTable(conn, "ontime", combine_ontimes)
+  dbWriteTable(conn, "airports", airports)
+  dbWriteTable(conn, "carriers", carriers)
+  dbWriteTable(conn, "planes", planes)
+}
+
+# Create dplyr table references
+ontime_db   <- tbl(conn, "ontime")
+airports_db <- tbl(conn, "airports")
+carriers_db <- tbl(conn, "carriers")
+planes_db   <- tbl(conn, "planes")
+```
+
+## Exercise A
+```{r exercise A}
+
+#check number of missings in CRSDepTime and DepTime
+crs_dep_missings <- ontime_db %>% 
+  filter(is.na(crsdeptime)) %>% 
+  summarise(n_missing = n()) %>% 
+  collect ()
+
+dep_missings <- ontime_db %>% 
+  filter(is.na(deptime)) %>% 
+  summarise(n_missing = n()) %>% 
+  collect()
+
+missing_arrdelay_info <- ontime_db %>% #all missing arrdelay were diverted or cancelled
+  filter(is.na(arrdelay)) %>%
+  group_by(cancelled, diverted) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  collect()
+
+cat("Number of Missings in CRSDepTime:", crs_dep_missings[[1]], "\n Number of Missings in DepTime:", dep_missings[[1]])
+
+
+#get dayofweek per year
+best_days <- ontime_db %>% 
+  mutate(weekday_label = case_when(
+    dayofweek == 1 ~ "Monday",
+    dayofweek == 2 ~ "Tuesday",
+    dayofweek == 3 ~ "Wednesday",
+    dayofweek == 4 ~ "Thursday",
+    dayofweek == 5 ~ "Friday",
+    dayofweek == 6 ~ "Saturday",
+    dayofweek == 7 ~ "Sunday")) %>%
+  group_by(year, weekday_label) %>% 
+  summarise(mean_arrdelay = mean(arrdelay, na.rm = TRUE), .groups = "drop") %>% 
+  group_by(year) %>% 
+  slice_min(mean_arrdelay, n = 1) %>% 
+  collect()
+
+best_days %>% 
+  kable(col.names = c("Year", "Day", "AAD"), #column names
+        caption = "Best Day to Fly per Year to Minimise Delays",
+        digits = 2,
+        align = "c") %>%  #center columns
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE, 
+                position = "center") %>% 
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>%  #header
+  column_spec(1:3, border_left = FALSE, width = "5em", bold = FALSE)
+
+#get hours per year
+best_hours <- ontime_db %>% 
+  mutate(hour = floor(crsdeptime / 100)) %>% 
+  group_by(year, hour) %>% 
+  summarise(mean_arrdelay = mean(arrdelay, na.rm = TRUE), .groups = "drop") %>% 
+  group_by(year) %>% 
+  slice_min(mean_arrdelay, n = 1) %>% 
+  collect()
+
+best_hours %>% 
+  kable(col.names = c("Year", "Hour", "AAD"),
+        caption = "Best Hour to Fly per Year to Minimise Delays",
+        digits = 2,
+        align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE,
+                position = "center") %>% 
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>%  #header
+  column_spec(1:3, border_left = FALSE, width = "5em", bold = FALSE)
+
+
+#combining: best day AND hour per year
+
+best_day_hour_per_year <- ontime_db %>%
+  mutate(hour = floor(crsdeptime / 100)) %>%
+  mutate(weekday_label = case_when(
+    dayofweek == 1 ~ "Monday",
+    dayofweek == 2 ~ "Tuesday",
+    dayofweek == 3 ~ "Wednesday",
+    dayofweek == 4 ~ "Thursday",
+    dayofweek == 5 ~ "Friday",
+    dayofweek == 6 ~ "Saturday",
+    dayofweek == 7 ~ "Sunday")) %>%
+  group_by(year, weekday_label, hour) %>%
+  summarise(mean_arrdelay = mean(arrdelay, na.rm = TRUE), .groups = "drop") %>%
+  group_by(year) %>%
+  slice_min(order_by = mean_arrdelay, n = 1) %>%
+  collect()
+
+best_day_hour_per_year %>% 
+  kable(col.names = c("Year", "Day", "Hour", "AAD"),
+        caption = "Best Day and Hour to Fly per Year to Minimise Delays",
+        digits = 2,
+        align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE,
+                position = "center") %>% 
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>% #header
+  column_spec(1:4, border_left = FALSE, width = "5em", bold = FALSE)
+
+
+#time periods
+best_times <- ontime_db %>% 
+  mutate(hour = floor(crsdeptime / 100)) %>% 
+  mutate(time_period = case_when(
+    hour >=23 | hour < 6 ~ "Night Time",
+    hour >= 6 & hour < 10 ~ "Early Morning",
+    hour >= 10 & hour < 12 ~ "Late Morning",
+    hour >= 12 & hour < 14 ~ "Early Afternoon",
+    hour >= 14 & hour < 17 ~ "Afternoon",
+    hour >= 17 & hour < 20 ~ "Evening",
+    hour >= 20 & hour < 23 ~ "Late Evening",
+    TRUE ~ NA_character_
+  )) %>% 
+  group_by(year, time_period) %>% 
+  summarise(mean_arrdelay = mean(arrdelay, na.rm = TRUE), .groups = "drop") %>% 
+  group_by(year) %>% 
+  slice_min(mean_arrdelay, n = 1) %>% 
+  collect()
+
+best_times %>% 
+  kable(col.names = c("Year", "Time Period", "AAD"),
+        caption = "Best Time Period to Fly per Year to Minimise Delays",
+        digits = 2,
+        align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE,
+                position = "center") %>% 
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>%  #header
+  column_spec(1:3, border_left = FALSE, width = "7em", bold = FALSE)
+
+
+#combining: best day AND time period per year
+
+best_day_time_per_year <- ontime_db %>%
+  mutate(hour = floor(crsdeptime / 100)) %>%
+  mutate(time_period = case_when(
+    hour >=23 | hour < 6 ~ "Night Time",
+    hour >= 6 & hour < 10 ~ "Early Morning",
+    hour >= 10 & hour < 12 ~ "Late Morning",
+    hour >= 12 & hour < 14 ~ "Early Afternoon",
+    hour >= 14 & hour < 17 ~ "Afternoon",
+    hour >= 17 & hour < 20 ~ "Evening",
+    hour >= 20 & hour < 23 ~ "Late Evening",
+    TRUE ~ NA_character_
+  )) %>%
+  mutate(weekday_label = case_when(
+    dayofweek == 1 ~ "Monday",
+    dayofweek == 2 ~ "Tuesday",
+    dayofweek == 3 ~ "Wednesday",
+    dayofweek == 4 ~ "Thursday",
+    dayofweek == 5 ~ "Friday",
+    dayofweek == 6 ~ "Saturday",
+    dayofweek == 7 ~ "Sunday")) %>%
+  group_by(year, weekday_label, time_period) %>%
+  summarise(mean_arrdelay = mean(arrdelay, na.rm = TRUE), .groups = "drop") %>%
+  group_by(year) %>%
+  slice_min(order_by = mean_arrdelay, n = 1) %>%
+  collect()
+
+best_day_time_per_year %>% 
+  kable(col.names = c("Year", "Day", "Time Period", "AAD"),
+        caption = "Best Day and Time Period to Fly per Year to Minimise Delays",
+        digits = 2,
+        align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE,
+                position = "center") %>% 
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>% #header
+  column_spec(1:4, border_left = FALSE, width = "7em", bold = FALSE)
+
+```
+
+##Exercise B
+```{r}
+#getting ontime and planes
+flight_age_delay <- inner_join(ontime_db, planes_db, by = "tailnum") %>%
+  select(year = year.x, arrdelay, model, year.y, tailnum) %>% 
+  collect() 
+
+#check why year.y is character and not integer - some values must have text
+flight_age_delay %>%
+  filter(!grepl("^\\d{4}$", year.y)) %>%
+  distinct(year.y)
+
+#mutating to numeric, forces all other values to NA
+flight_age_delay <- flight_age_delay %>%
+  mutate(year.y = as.numeric(year.y))
+
+
+#check percentage of NA in year.y
+flight_age_delay %>%
+  filter(is.na(year.y)) %>%
+  summarise(n_missing = n(), percent = n()/nrow(flight_age_delay) * 100) 
+
+flight_age_delay <- flight_age_delay %>% 
+    mutate(missing_year_y = ifelse(is.na(year.y), "Missing", "Present"))
+
+#does model influence?
+flight_age_delay %>%
+  count(model, missing_year_y) %>%
+  tidyr::pivot_wider(names_from = missing_year_y, values_from = n, values_fill = 0) %>%
+  mutate(percent_missing = Missing / (Missing + Present) * 100)
+
+#the model 1121 is which tailnum?
+flight_age_delay %>% filter(model == 1121) %>% 
+  distinct(tailnum)
+
+#place 1966 as year.y in all of model 1121:
+flight_age_delay <- flight_age_delay %>%
+  mutate(year.y = ifelse(is.na(year.y) & model == "1121", 1966, year.y)) %>% 
+  mutate(missing_year_y = ifelse(is.na(year.y), "Missing", "Present"))
+
+flight_age_delay %>%
+  filter(is.na(year.y)) %>%
+  summarise(n_missing = n(), percent = n()/nrow(flight_age_delay) * 100)
+
+#is there a difference in arrdelay?
+flight_age_delay %>%
+  group_by(missing_year_y) %>%
+  summarise(
+    n = n(),
+    missing_arrdelay = sum(is.na(arrdelay)),
+    mean_arrdelay = mean(arrdelay, na.rm = TRUE),
+    median_arrdelay = median(arrdelay, na.rm = TRUE),
+    sd_arrdelay = sd(arrdelay, na.rm = TRUE)
+  )
+
+t.test(arrdelay ~ missing_year_y, data = flight_age_delay)
+
+#drop empty year.y
+flight_age_delay <- flight_age_delay %>%
+  filter(!is.na(year.y)) %>% 
+  mutate(airplane_age = year - year.y)
+
+#how many missing arrival delays are there:
+flight_age_delay %>%
+  filter(is.na(arrdelay)) %>%
+  summarise(n_missing = n(), percent = n()/nrow(flight_age_delay) * 100)
+
+#drop the missing arrival delays
+flight_age_delay <- flight_age_delay %>%
+  filter(!is.na(arrdelay)) 
+
+#check for outliers and values that don't make sense
+summary_age <- summary(flight_age_delay$airplane_age)
+summary_year <- summary(flight_age_delay$year.y)
+summary_delay <- summary(flight_age_delay$arrdelay)
+
+# Combine into a data frame
+summary_table <- data.frame(
+  Statistic = names(summary_age),
+  Airplane_Age = as.numeric(summary_age),
+  Year_Manufactured = as.numeric(summary_year),
+  Arrival_Delay = as.numeric(summary_delay)
+)
+
+summary_table %>%
+  kable(col.names = c("Statistic", "Airplane Age", "Year of Manufacture", "Arrival Delay"),
+    caption = "Summary Statistics for Airplane Age, Year of Manufacture, and Arrival Delay",
+    digits = 2,
+    align = "c") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE,
+                position = "center") %>%
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>% 
+  column_spec(1:4, border_left = FALSE, width = "9em", bold = FALSE)
+
+#remove year 0 and age of plane negative
+flight_age_delay <- flight_age_delay %>%
+  filter(year.y > 0) %>% 
+  filter(airplane_age > 0) 
+
+
+#visually check for outliers
+
+#airplane age
+hist_age <- ggplot(flight_age_delay, aes(x = airplane_age)) +
+  geom_histogram(binwidth = 2, fill = "#818aa3", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Airplane Age",
+    x = "Airplane Age (years)",
+    y = "Count"
+  ) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
+
+box_age <- ggplot(flight_age_delay, aes(x = airplane_age, y = 1)) +
+  geom_boxplot(fill = "#818aa3", outlier.shape = 1, width = 0.2) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(x = "Airplane Age (years)", y = NULL)
+
+
+(hist_age / box_age) + plot_layout(heights = c(3, 1))
+
+#arrival delay
+hist_arr <- ggplot(flight_age_delay, aes(x = arrdelay)) +
+  geom_histogram(binwidth = 2, fill = "#1b9e77", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Arrival Delay",
+    x = "Arrival Delay (minutes)",
+    y = "Count"
+  ) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
+
+box_arr <- ggplot(flight_age_delay, aes(x = arrdelay, y = 1)) +
+  geom_boxplot(fill = "#1b9e77", outlier.shape = 1, width = 0.2) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(x = "Arrival Delay (minutes)", y = NULL)
+
+
+(hist_arr / box_arr) + plot_layout(heights = c(3, 1))
+
+
+#year.y
+hist_year <- ggplot(flight_age_delay, aes(x = year.y)) +
+  geom_histogram(binwidth = 2, fill = "#6d2e46", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Year of Manufacture",
+    x = "Year of Manufacture (Years)",
+    y = "Count"
+  ) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
+
+box_year <- ggplot(flight_age_delay, aes(x = year.y, y = 1)) +
+  geom_boxplot(fill = "#6d2e46", outlier.shape = 1, width = 0.2) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(x = "Year of Manufacture (Years)", y = NULL)
+
+
+(hist_year / box_year) + plot_layout(heights = c(3, 1))
+
+```
+
