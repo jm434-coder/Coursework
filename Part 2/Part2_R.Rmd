@@ -369,7 +369,13 @@ box_age <- ggplot(flight_age_delay, aes(x = airplane_age, y = 1)) +
     axis.text.y = element_blank(),
     axis.ticks.y = element_blank()
   ) +
-  labs(x = "Airplane Age (years)", y = NULL)
+  labs(x = "Airplane Age (years)", y = NULL) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
 
 
 (hist_age / box_age) + plot_layout(heights = c(3, 1))
@@ -397,7 +403,13 @@ box_arr <- ggplot(flight_age_delay, aes(x = arrdelay, y = 1)) +
     axis.text.y = element_blank(),
     axis.ticks.y = element_blank()
   ) +
-  labs(x = "Arrival Delay (minutes)", y = NULL)
+  labs(x = "Arrival Delay (minutes)", y = NULL) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
 
 
 (hist_arr / box_arr) + plot_layout(heights = c(3, 1))
@@ -426,7 +438,13 @@ box_year <- ggplot(flight_age_delay, aes(x = year.y, y = 1)) +
     axis.text.y = element_blank(),
     axis.ticks.y = element_blank()
   ) +
-  labs(x = "Year of Manufacture (Years)", y = NULL)
+  labs(x = "Year of Manufacture (Years)", y = NULL) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
 
 
 (hist_year / box_year) + plot_layout(heights = c(3, 1))
