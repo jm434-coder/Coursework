@@ -344,8 +344,32 @@ flight_age_delay <- flight_age_delay %>%
   filter(airplane_age > 0) 
 
 
-#visually check for outliers
+#check again for outliers and values that don't make sense
+summary_age <- summary(flight_age_delay$airplane_age)
+summary_year <- summary(flight_age_delay$year.y)
+summary_delay <- summary(flight_age_delay$arrdelay)
 
+# Combine into a data frame
+summary_table <- data.frame(
+  Statistic = names(summary_age),
+  Airplane_Age = as.numeric(summary_age),
+  Year_Manufactured = as.numeric(summary_year),
+  Arrival_Delay = as.numeric(summary_delay)
+)
+
+summary_table %>%
+  kable(col.names = c("Statistic", "Airplane Age", "Year of Manufacture", "Arrival Delay"),
+    caption = "Summary Statistics for Airplane Age, Year of Manufacture, and Arrival Delay",
+    digits = 2,
+    align = "c") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE,
+                position = "center") %>%
+  row_spec(0, bold = TRUE, background = "#F5B88F") %>% 
+  column_spec(1:4, border_left = FALSE, width = "9em", bold = FALSE)
+
+
+#and see visually
 #airplane age
 hist_age <- ggplot(flight_age_delay, aes(x = airplane_age)) +
   geom_histogram(binwidth = 2, fill = "#818aa3", color = "black", alpha = 0.7) +
@@ -449,5 +473,42 @@ box_year <- ggplot(flight_age_delay, aes(x = year.y, y = 1)) +
 
 (hist_year / box_year) + plot_layout(heights = c(3, 1))
 
+#10 biggest arrival delays
+flight_age_delay %>%
+  arrange(desc(arrdelay)) %>%
+  select(arrdelay, tailnum, model, airplane_age, year) %>%
+  head(10)
+
+#10 most negative arrival delays
+flight_age_delay %>%
+  arrange(arrdelay) %>%
+  select(arrdelay, tailnum, model, airplane_age, year) %>%
+  head(10)
+
+flight_age_delay <- flight_age_delay %>%
+  filter(arrdelay >= -120)
+
+ggplot(flight_age_delay, aes(x = airplane_age, y = arrdelay, color = as.factor(year))) +
+  geom_point(alpha = 0.3, size = 1) +
+  labs(
+    title = "Arrival Delay vs Airplane Age by Year",
+    x = "Airplane Age (years)",
+    y = "Arrival Delay (minutes)",
+    color = "Year"
+  ) +
+  coord_cartesian(xlim = c(0, 50), ylim = c(-100, 300)) +  # adjust if needed
+  theme_minimal()
+
+#age threshold --> Q3
+age_threshold <- quantile(flight_age_delay$airplane_age, 0.75, na.rm = TRUE)
+
+flight_age_delay <- flight_age_delay %>%
+  mutate(age_group = ifelse(airplane_age >= age_threshold, "Older", "Newer"))
+
+#t test difference means per year
+t_test_results <- flight_age_delay %>%
+  group_by(year) %>%
+  do(tidy(t.test(arrdelay ~ age_group, data = .))) %>%
+  ungroup()
 ```
 
