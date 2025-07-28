@@ -21,6 +21,8 @@ library(broom)
 library(mlr3)
 library(mlr3learners)
 library(mlr3pipelines)
+library(mlr3filters)
+
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #ensures im on the right directory
 ```
 
@@ -562,14 +564,14 @@ flight_data_raw <- ontime_db %>%
     year, month, dayofweek,
     origin, dest,
     crsdeptime, crsarrtime,
-    distance, diverted
+    distance, diverted, uniquecarrier
   ) %>%
   filter(!is.na(diverted)) %>% #remove missing diverted
   collect()
 
 flight_data <- flight_data_raw %>%
   mutate(
-    diverted_bin = ifelse(diverted == 1, 1, 0), #make it as a bin
+    diverted_bin = ifelse(diverted == 1, 1, 0), #make it ones and zeros, in case something is wrong it needs to be bin
     sched_dep_hour = floor(crsdeptime / 100), #format of hour
     sched_arr_hour = floor(crsarrtime / 100)
   ) %>%
@@ -594,39 +596,82 @@ flight_data <- flight_data %>%
   mutate(diverted_bin = factor(diverted_bin, levels = c(0, 1)))
 
 
-#smaller per year
-flight_data_small <- flight_data %>%
-  filter(year == 2004) %>%
-  select(
-    diverted_bin, month, dayofweek, sched_dep_hour, sched_arr_hour,
-    distance, origin, dest, origin_lat, origin_lon, dest_lat, dest_lon
-  ) %>%
-  filter(!is.na(diverted_bin))
+#where results will be stored
+results <- list()
+features_by_year <- list()
+coefs_by_year <- list()
 
-#classification task
-task <- TaskClassif$new(
-  id = "diverted_2004",
-  backend = flight_data_small,
-  target = "diverted_bin",
-  positive = "Yes"
+for (yr in sort(unique(flight_data$year))) {
+  cat("Processing year:", yr, "\n")
+  
+  #filter the data of the selected year
+  df <- flight_data %>%
+    filter(year == yr) %>%
+    select(
+      diverted_bin, month, dayofweek, sched_dep_hour, sched_arr_hour,
+      distance, origin_lat, origin_lon, dest_lat, dest_lon, uniquecarrier
+    ) %>%
+    filter(!is.na(diverted_bin))
+  
+  if (nrow(df) < 1000 || length(unique(df$diverted_bin)) < 2) {
+    cat("Skipping year", yr, "- insufficient data\n")
+    next
+  }
+  
+  #create task
+  task <- TaskClassif$new(
+    id = paste0("diverted_", yr),
+    backend = df,
+    target = "diverted_bin",
+    positive = "1"
+  )
+  
+  #pipeline: encode - filter -logistic regression
+  graph <- po("imputemean") %>>%
+    po("encode", method = "one-hot") %>>%
+    po("filter", filter = flt("information_gain"), param_vals = list(filter.frac = 0.5)) %>>%
+    lrn("classif.log_reg", predict_type = "prob")
+  
+  graph_learner <- GraphLearner$new(graph)
+  
+  #split: 70% training and 30% test
+  set.seed(123)
+  split <- partition(task, ratio = 0.7)
+  
+  #train and predict
+  graph_learner$train(task, row_ids = split$train)
+  prediction <- graph_learner$predict(task, row_ids = split$test)
+  
+  #store AUC
+  auc <- prediction$score(msr("classif.auc"))
+  results[[as.character(yr)]] <- auc
+  
+  #get coefficients and selected features
+  graph_learner$train(task)
+  selected_feats <- graph_learner$pipeops$filter$state$features
+  features_by_year[[as.character(yr)]] <- selected_feats
+  
+  #extract coefficients
+  coefs <- as.data.frame(graph_learner$model$learner$model$coefficients)
+  colnames(coefs) <- "coefficient"
+  coefs$feature <- rownames(coefs)
+  coefs$year <- yr
+  coefs_by_year[[as.character(yr)]] <- coefs
+  
+  #cleanup because of ram
+  gc()
+}
+
+# combine results to data.frames
+results_df <- data.frame(
+  year = names(results),
+  auc = unlist(results)
 )
 
-#pre processing and learner
-pipe <- po("removeconstants") %>>%
-        po("imputemean") %>>%
-        po("encode", method = "treatment") %>>%
-        po("scale") %>>%
-        po("filter", filter = flt("information_gain"), param_vals = list(filter.frac = 0.5))  # keep top 50%
+coefs_df <- do.call(rbind, coefs_by_year)
 
-learner <- lrn("classif.log_reg", predict_type = "prob")
-
-graph <- pipe %>>% learner
-graph_learner <- GraphLearner$new(graph)
-
-set.seed(123) #make not random
-rr <- resample(task, graph_learner, rsmp("cv", folds = 5))
-
-rr$aggregate(msr("classif.auc")) #auc
+# preview
+print(results_df)
 
 ```
 
