@@ -17,6 +17,10 @@ library(lubridate) #better for handling time and changing the format
 library(knitr) #create the tables
 library(kableExtra)
 library(patchwork)
+library(broom)
+library(mlr3)
+library(mlr3learners)
+library(mlr3pipelines)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #ensures im on the right directory
 ```
 
@@ -488,17 +492,6 @@ flight_age_delay %>%
 flight_age_delay <- flight_age_delay %>%
   filter(arrdelay >= -120)
 
-ggplot(flight_age_delay, aes(x = airplane_age, y = arrdelay, color = as.factor(year))) +
-  geom_point(alpha = 0.3, size = 1) +
-  labs(
-    title = "Arrival Delay vs Airplane Age by Year",
-    x = "Airplane Age (years)",
-    y = "Arrival Delay (minutes)",
-    color = "Year"
-  ) +
-  coord_cartesian(xlim = c(0, 50), ylim = c(-100, 300)) +  # adjust if needed
-  theme_minimal()
-
 #age threshold --> Q3
 age_threshold <- quantile(flight_age_delay$airplane_age, 0.75, na.rm = TRUE)
 
@@ -510,5 +503,130 @@ t_test_results <- flight_age_delay %>%
   group_by(year) %>%
   do(tidy(t.test(arrdelay ~ age_group, data = .))) %>%
   ungroup()
+
+t_test_results %>%
+  select(year, estimate, estimate1, estimate2, conf.low, conf.high, p.value, statistic) %>%
+  mutate(
+    estimate = round(estimate, 2),
+    estimate1 = round(estimate1, 2),
+    estimate2 = round(estimate2, 2),
+    conf.low = round(conf.low, 2),
+    conf.high = round(conf.high, 2),
+    p.value = signif(p.value, 3),
+    statistic = round(statistic, 2)
+  ) %>%
+  kable(
+    caption = "T-Test Results: Arrival Delay Difference Between Older and Newer Planes by Year",
+    col.names = c("Year", "Mean Diff (Newer - Older)", "Mean Newer", "Mean Older", "CI Lower", "CI Upper", "p-value", "t-statistic"),
+    align = "c"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#F5B88F")
+
+flight_age_delay_all <- flight_age_delay %>%
+  mutate(year_label = as.character(year))  #make year into character
+
+# Add "All Years" version
+flight_age_delay_combined <- flight_age_delay_all %>%
+  bind_rows(
+    flight_age_delay_all %>% mutate(year_label = "All Years")
+  )
+
+ggplot(flight_age_delay_combined, aes(x = airplane_age, y = arrdelay)) +
+  geom_point(alpha = 0.2, size = 0.7, color = "#2F5496") +
+  geom_smooth(method = "lm", se = FALSE, color = "#E97132", size = 0.8) +
+  facet_wrap(~ year_label, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Scatterplots of Arrival Delay vs Airplane Age by Year (with Trend Lines)",
+    x = "Airplane Age (years)",
+    y = "Arrival Delay (minutes)"
+  ) +
+  coord_cartesian(xlim = c(0, 50), ylim = c(-100, 300)) +
+  theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black")
+    )
+
+```
+
+#Exercise C
+```{r}
+flight_data_raw <- ontime_db %>%
+  select(
+    year, month, dayofweek,
+    origin, dest,
+    crsdeptime, crsarrtime,
+    distance, diverted
+  ) %>%
+  filter(!is.na(diverted)) %>% #remove missing diverted
+  collect()
+
+flight_data <- flight_data_raw %>%
+  mutate(
+    diverted_bin = ifelse(diverted == 1, 1, 0), #make it as a bin
+    sched_dep_hour = floor(crsdeptime / 100), #format of hour
+    sched_arr_hour = floor(crsarrtime / 100)
+  ) %>%
+  select(-diverted, -crsdeptime, -crsarrtime)
+
+airports <- airports_db %>% 
+  collect()
+
+#rename before joing to make sure everything is correct and ready to join dependidng on arrival and destination
+airports_origin <- airports %>%
+  select(origin = iata, origin_lat = lat, origin_lon = long)
+
+airports_dest <- airports %>%
+  select(dest = iata, dest_lat = lat, dest_lon = long)
+
+# Merge both
+flight_data <- flight_data %>%
+  left_join(airports_origin, by = "origin") %>%
+  left_join(airports_dest, by = "dest")
+
+flight_data <- flight_data %>%
+  mutate(diverted_bin = factor(diverted_bin, levels = c(0, 1)))
+
+
+#smaller per year
+flight_data_small <- flight_data %>%
+  filter(year == 2004) %>%
+  select(
+    diverted_bin, month, dayofweek, sched_dep_hour, sched_arr_hour,
+    distance, origin, dest, origin_lat, origin_lon, dest_lat, dest_lon
+  ) %>%
+  filter(!is.na(diverted_bin))
+
+#classification task
+task <- TaskClassif$new(
+  id = "diverted_2004",
+  backend = flight_data_small,
+  target = "diverted_bin",
+  positive = "Yes"
+)
+
+#pre processing and learner
+pipe <- po("removeconstants") %>>%
+        po("imputemean") %>>%
+        po("encode", method = "treatment") %>>%
+        po("scale") %>>%
+        po("filter", filter = flt("information_gain"), param_vals = list(filter.frac = 0.5))  # keep top 50%
+
+learner <- lrn("classif.log_reg", predict_type = "prob")
+
+graph <- pipe %>>% learner
+graph_learner <- GraphLearner$new(graph)
+
+set.seed(123) #make not random
+rr <- resample(task, graph_learner, rsmp("cv", folds = 5))
+
+rr$aggregate(msr("classif.auc")) #auc
+
 ```
 
